@@ -1,0 +1,12 @@
+language: bash
+
+os:
+    - linux
+
+script:
+    - test/zdisk.bats --tap
+
+notifications:
+    email:
+        on_success: never
+

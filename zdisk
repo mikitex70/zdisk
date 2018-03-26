@@ -1,0 +1,449 @@
+#!/bin/bash
+#
+# Manages a persistent compressed ramdisk.
+#
+# With the `zdisk start` a compressed ramdisk is created and mounted into `/mnt/zdisk`
+# (can be changed with ZDISK_MOUNTPOINT environment variable). The ramdisk is sized at
+# 25% of total memory (uncompressed size) but tipically it will use 12-13% memory or
+# even less, depending of the stored data.
+#
+# With the command `zdisk stop` the contents are "squashed" in the `/var/lib/zdisk.sqfs`
+# file (can be changed with the SAVED_DISK environment variable), and then the disk is 
+# destroyed and the memory freed.
+#
+# With the next `zdisk start` the saved contents are made available without loading
+# into memory (the squashed file is mounted directly) and then overlayed with the
+# compressed ramdisk, to make disk writeable. A next `zdisk save` will merge new contents
+# with the saved backup, so the next time all changes will be available.
+#
+# With the `zdisk save` it is possible to make a backup of the disk contents without
+# the need to stop the disk; this maybe usefull to take backups on demand or by
+# scheduling it with cron.
+#
+# Dependencies:
+#   tools  : zramctl, mksquashfs
+#   modules: zram, overlay
+#
+# Michele Tessaro
+
+VERSION="1.0.0"
+ZDISK_PATH="${ZDISK_PATH:-$(readlink -f "$0")}"   # The path of this script
+ROOT=${ROOT:-""}                                  # Set externally to change the installation root
+SYSTEMD_SERVICE_DIR="${ROOT}/etc/systemd/system"  # Systemd configuration directory
+CONF_DIR="${ROOT}/etc/conf.d"                     # Configuration files directory
+BIN_PATH=${BIN_PATH:-"${ROOT}/usr/local/bin"}     # Binary installation path
+ZDISK_BIN="${BIN_PATH}/zdisk"                     # Name of the script binary
+
+# These options are configurable throught the /etc/conf.d/zdisk configuration file
+RESTORE_ON_START=${RESTORE_ON_START:-"true"}
+SAVE_ON_STOP=${SAVE_ON_STOP:-"true"}
+ZDISK_PCTSIZE=${ZDISK_PCTSIZE:-25}
+memTotal=$(head -n1 /proc/meminfo | tr -s ' ' | cut -d ' ' -f2)
+ZDISK_SIZE=${ZDISK_SIZE:-"$(( memTotal*ZDISK_PCTSIZE/100 ))K"}
+ZDISK_ALGORITHM=${ZDISK_ALGORITHM:-"lzo"}
+ZDISK_FS=${ZDISK_FS:-"xfs"}
+SERVICE_NAME=$(basename "$0")
+ZDISK_MOUNTPOINT=${ZDISK_MOUNTPOINT:-"${ROOT}/mnt/${SERVICE_NAME}"}
+SAVED_DISK="${ROOT}/var/lib/${SERVICE_NAME}"
+SAVED_QUICK="${SAVED_DISK}.ovr.tbz2"
+SAVE_MODE=${SAVE_MODE:-"full"}
+SAVE_NICE=${SAVE_NICE:-10}
+
+# These variables does not need to be changed
+OVR_WORKDIR=${OVR_WORKDIR:-"${ROOT}/tmp"}
+OVR_LOWER="${OVR_WORKDIR}/.${SERVICE_NAME}/squashed"
+OVR_ZRAM="${OVR_WORKDIR}/.${SERVICE_NAME}/zram"
+# OVER_UPPER and OVR_WORK must be on the same filesystem
+OVR_UPPER="${OVR_ZRAM}/upper"
+OVR_WORK="${OVR_ZRAM}/work"
+
+
+function start() {
+    if grep -q "${ZDISK_MOUNTPOINT}" /etc/mtab; then
+        echo "Disk already mounted"
+        exit 1
+    else
+        modprobe overlay            || die "Cannot load overlay module"
+        modprobe zram num_devices=4 || die "Cannot load zram module"
+	sleep 1
+
+        local ZRAM_DEVICE=$(zramctl -f)
+
+        sleep 1 # Give time to settle down, to avoid errors
+
+        # Creation of the compressed ramdisk
+        zramctl ${ZRAM_DEVICE} -s ${ZDISK_SIZE} -a ${ZDISK_ALGORITHM}
+        mkfs -t ${ZDISK_FS} ${ZRAM_DEVICE}
+        mkdir -p "${ZDISK_MOUNTPOINT}" # Make sure the mount point exists
+
+        if [[ "${RESTORE_ON_START}" == "true" && -f "${SAVED_DISK}.sqfs" ]]; then
+            # There is a previous backup, need to make it available
+            mkdir -p "${OVR_LOWER}" "${OVR_ZRAM}"
+            mount ${ZRAM_DEVICE} "${OVR_ZRAM}"
+            # Build of the squashfs+zram overlayed disk
+            mkdir -p "${OVR_UPPER}" "${OVR_WORK}"
+            mount -t squashfs "${SAVED_DISK}.sqfs" "${OVR_LOWER}"
+            mount -t overlay -o lowerdir=${OVR_LOWER},upperdir=${OVR_UPPER},workdir=${OVR_WORK} overlayfs "${ZDISK_MOUNTPOINT}"
+        else
+            # No previous backup, simply mount the compressed ramdisk
+            mount ${ZRAM_DEVICE} "${ZDISK_MOUNTPOINT}"
+        fi
+        
+        if [[ "${RESTORE_ON_START}" == "true" && -f "${SAVED_QUICK}" ]]; then
+            # There is a quick backup, restore it
+            #mkdir -p "${OVR_ZRAM}"
+            tar -C "${ZDISK_MOUNTPOINT}" -jxf "${SAVED_QUICK}"
+        fi
+
+        # Make sure users can write to the disk
+        chgrp users "${ZDISK_MOUNTPOINT}"
+        chmod g+rwx "${ZDISK_MOUNTPOINT}"
+    fi
+}
+
+function stop() {
+    local doSave="${SAVE_ON_STOP}"
+    local quickSave=""
+
+    # Argument parsing
+    while [[ -n "$1" ]]; do
+        case "$1" in
+            "--nosave")
+                doSave="false"
+                ;;
+            "--quick")
+                quickSave="--quick"
+                ;;
+            *)
+                help
+                exit 1
+                ;;
+        esac
+        shift
+    done
+
+    if grep -q "${ZDISK_MOUNTPOINT}" /etc/mtab; then
+        [[ "${doSave}" == "true" ]] && save ${quickSave}
+        
+	# Find the zdisk device BEFORE unmounting it
+        local ZDISK_DEVICE=$(grep "${ZDISK_MOUNTPOINT}" /etc/mtab | cut -d ' ' -f1)
+
+        # We can unmount the zdisk
+        umount "${ZDISK_MOUNTPOINT}" || die "Unable to unmount ${ZDISK_MOUNTPOINT}, maybe in use"
+    
+        case ${ZDISK_DEVICE} in
+	    overlayfs)
+                # The disk was overlayed, we need to unmount all mount points
+	        ZDISK_DEVICE=$(grep "${OVR_ZRAM}" /etc/mtab | cut -d ' ' -f1)
+	        umount "${OVR_ZRAM}"
+	        umount "${OVR_LOWER}"
+	        ;;
+	    *)
+	        ;;
+        esac
+
+        # Now we can destroy the zram device to free memory
+        zramctl -r ${ZDISK_DEVICE}
+        # Finally, put the saved disk in place for the next start
+        if [[ -f "${SAVED_DISK}.tmp.sqfs" ]]; then
+            echo "Restoring ${SAVED_DISK}.sqfs from ${SAVED_DISK}.tmp.sqfs"
+            mv "${SAVED_DISK}.tmp.sqfs" "${SAVED_DISK}.sqfs"
+        fi
+    else
+        echo "Disk not mounted"
+        exit 1
+    fi
+}
+
+function save() {
+    local saveMode=""
+    local saveDisk="${SAVED_DISK}"
+    local options=""
+    local overwrite=""
+    
+    # Argument parsing
+    while [[ -n "$1" ]]; do
+        case "$1" in
+            "--progress")
+                options="${options} -progress"
+                ;;
+            "--overwrite")
+                overwrite="true"
+                ;;
+            "--quick")
+                saveMode="quick"
+                ;;
+            "--dest")
+                shift
+                saveDisk="$1"
+                [[ -z "${saveMode}" ]] && saveMode="full"
+                ;;
+            *)
+                saveMode="$1"
+                ;;
+        esac
+        shift
+    done
+
+    if grep -q "${ZDISK_MOUNTPOINT}" /etc/mtab; then
+        # Disck mounted, we can save it
+        [[ "${saveMode}" == "incremental" || "${saveMode}" == "full" || "${saveMode}" == "quick" ]] || saveMode="full"
+
+        if [[ "${saveMode}" == "quick" ]]; then
+            # Backup only the changed files (from the ramdisk)
+            echo "Doing ${saveMode} backup"
+            mkdir -p $(dirname "${SAVED_QUICK}")
+            
+            if [ -d "${OVR_ZRAM}/upper" ]; then
+                # Ramdisk + squashed filesystem, save only ramdisk contents
+                #nice -n ${SAVE_NICE} 
+                tar -C "${OVR_ZRAM}/upper" -jcf "${SAVED_QUICK}" . || die "Unable to save ramdisk contents"
+            else
+                # Ramdisk only, save the contents
+                #nice -n ${SAVE_NICE} 
+                tar -C "${ZDISK_MOUNTPOINT}" -jcf "${SAVED_QUICK}" . || die "Unable to save ramdisk contents"
+            fi
+        else
+            if [[ "${saveMode}" == "incremental" ]]; then
+                # It isn't necessary to backup the .prev_backup directory 
+                options="-root-becomes .prev_backup -wildcards -e .prev_backup ${options}"
+            else
+                # The .prev_backup directory must be ignored so to build a much smaller file
+                options="-noappend -wildcards -e .prev_backup ${options}"
+            fi
+            
+            if [[ -n "$(losetup -j ${saveDisk}.sqfs)" ]]; then
+                # The squashfs file is mounted, overwriting may be risky
+                saveDisk="${saveDisk}.tmp"
+                overwrite="true"
+                echo "Destination file is mounted, saving to ${saveDisk}.sqfs"
+            fi
+
+            if [[ -f "${saveDisk}.sqfs" && -z "${overwrite}" ]]; then
+                # Keep only one previous backup
+                [[ -f "${saveDisk}.bak"  ]] && rm "${saveDisk}.bak"
+                [[ "${saveMode}" == "full" ]] && mv "${saveDisk}.sqfs" "${saveDisk}.bak"
+            fi
+            
+            # Backup disk contents
+            echo "Doing ${saveMode} backup"
+            mkdir -p $(dirname "${saveDisk}")
+            nice -n ${SAVE_NICE} mksquashfs "${ZDISK_MOUNTPOINT}" "${saveDisk}.sqfs" ${options} || die "Unable to save ramdisk contents"
+            # Backup done, remove quick backup if present
+            [[ -f "${SAVED_QUICK}" ]] && rm "${SAVED_QUICK}"
+            return 0
+        fi
+    else
+        echo "Disk not mounted"
+        exit 1
+    fi
+}
+
+function install() {
+    local serviceType=""
+    local serviceName="zdisk"
+    local autostart="true"
+
+    # Argument parsing
+    while [[ -n "$1" ]]; do
+        case "$1" in
+            "--systemd")
+                serviceType="systemd"
+                ;;
+            "--autostart")
+                shift
+                autostart=$(boolValue "$1")
+                ;;
+            *)
+                serviceName="$1"
+                ;;
+        esac
+        shift
+    done
+    
+    if [ ! -f "${ZDISK_BIN}" ]; then
+        # Copy the script in the bin directory
+        mkdir -p "${BIN_PATH}"
+        cp "${ZDISK_PATH}" "${ZDISK_BIN}"
+    fi
+    
+    # Make an alias for the service
+    [ -f "${BIN_PATH}/${serviceName}" ] || ln -s "${ZDISK_BIN}" "${BIN_PATH}/${serviceName}"
+    
+    case "$serviceType" in
+        "systemd")
+            mkdir -p "${SYSTEMD_SERVICE_DIR}" "${CONF_DIR}"
+            # Create a configuration file
+            [ -f "${CONF_DIR}/${serviceName}" ] || cat > "${CONF_DIR}/${serviceName}" <<EOF
+# Where to mount the persistent compressed ramdisk
+ZDISK_MOUNTPOINT="/mnt/${serviceName}"
+
+# File where to backup ramdisk contents
+SAVED_DISK="/var/lib/${serviceName}.sqfs"
+
+# Backup mode. Possible values:
+#   incremental: fast but the backup may grow as deleted files still be the file
+#   full       : slow, but more compact (deleted files will be remove from the backup)
+SAVEMODE="full"
+
+# on stop, save disk contents
+# SAVE_ON_STOP="true"
+
+# On start, restore previous saved disk contents
+# RESTORE_ON_START="true"
+
+# zdisk size will be max 25% of total memory; used (compressed) memory is (hopefully) less.
+# ZDISK_PCTSIZE=25
+
+# Alternatively, the ramdisk size can be explicetly set
+# ZDISK_SIZE="1G"
+
+# Ramdisk compression algorithm; can be lzo o lz4
+# ZDISK_ALGORITHM="lzo"
+
+# Filesystem to use for the ramdisk. Usually xfs consumes less space.
+# ZDISK_FS="xfs"
+
+EOF
+            # Create the systemd service definition
+            [ -f "${SYSTEMD_SERVICE_DIR}/${serviceName}.service" ] || cat > "${SYSTEMD_SERVICE_DIR}/${serviceName}.service" <<EOF
+[Unit]
+Description=Persistent compressed ramdisk manager
+Wants=local-fs.target
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+EnvironmentFile=${CONF_DIR}/${serviceName}
+ExecStart=${ZDISK_BIN} start
+ExecStop=${ZDISK_BIN} stop --quick
+TimeoutStopSec=infinity
+
+[Install]
+WantedBy=multi-user.target
+EOF
+            # Inform systemd of the configuration change
+            systemctl daemon-reload
+
+            # Enable start on boot, if requested
+            [[ "${autostart}" == "true" ]] && systemctl enable "${serviceName}.service"
+            ;;
+        *)
+            ;;
+    esac
+    
+    exit 0 # Everithing is ok
+}
+
+function uninstall() {
+    local serviceType=""
+    local serviceName=${SERVICE_NAME}
+    
+    # Argument parsing
+    while [[ -n "$1" ]]; do
+        case "$1" in
+            "--systemd")
+                shift
+                serviceType="systemd"
+                serviceName=${1:-${SERVICE_NAME}}
+                ;;
+            *)
+                help
+                exit 1
+                ;;
+        esac
+        shift
+    done
+    
+    case "$serviceType" in
+        "systemd")
+            # Stop the service, if running
+            systemctl stop "${serviceName}"
+            # Disable the service
+            systemctl disable "${serviceName}"
+            # Remove the service definition, if exists
+            [ -f "${SYSTEMD_SERVICE_DIR}/${serviceName}.service" ] && rm "${SYSTEMD_SERVICE_DIR}/${serviceName}.service"
+            # Remove the configuration file, if exists
+            [ -f "${CONF_DIR}/${serviceName}" ] && rm "${CONF_DIR}/${serviceName}"
+            ;;
+    esac
+    
+    [ -f "${BIN_PATH}/${serviceName}" ] && rm "${BIN_PATH}/${serviceName}"
+    
+    exit 0 # Everithing is ok
+}
+
+function boolValue() {
+    local default=${2:-"true"}
+    
+    case "${1:-$default}" in
+        "1"|"true"|"yes"|"on")
+            echo "true"
+            ;;
+        "0"|"false"|"no"|"off")
+            echo "false"
+            ;;
+        *)
+            die "Expected boolean value, got '$1'"
+            ;;
+    esac
+}
+
+function die() {
+    echo "$1"
+    exit 1
+}
+
+function help() {
+    cat <<EOF
+Persistent compressed ramdisk manager v${VERSION}
+
+Usage: $0 {command} [options]
+
+command                   description
+-------                   -----------
+start                     mounts the compressed ramdisk
+stop                      unmounts the compressed ramdisk
+    --nosave                no not save ramdisk contents
+save                      save contents of a mounted ramdisk
+    --progress              show compression progress
+    --dest file             save to file instead of ${SAVED_DISK}.sqfs
+    --overwrite             overwrite if exists (do not create .bak file)
+install [name]            install script command (default name=${SERVICE_NAME})
+    --systemd               install also systemd service
+    --autostart [on|off]    make service start at boot (default: on)      
+uninstall [name]          uninstall script command (default name=${SERVICE_NAME})
+    --systemd               remove also systemd service
+EOF
+}
+
+# Options parsing
+case "$1" in
+    "start")
+    	start
+	;;
+    "stop")
+        shift
+        stop $@
+	;;
+    "save")
+        shift
+        save --progress $@
+	;;
+    "install")
+        shift
+        install $@
+        ;;
+    "uninstall")
+        shift
+        uninstall $@
+        ;;
+    "help")
+        help
+        ;;
+    *)
+        help
+	exit 1
+	;;
+esac
