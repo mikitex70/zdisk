@@ -1,7 +1,4 @@
-#!./libs/bats-core/bin/bats
-
-# Add the path of the zdisk script
-export PATH="$PWD/..:$PATH"
+#!test/libs/bats-core/bin/bats
 
 BATSLIB_TEMP_PRESERVE=0
 BATSLIB_TEMP_PRESERVE_ON_FAILURE=1
@@ -11,6 +8,8 @@ load 'libs/bats-assert/load'
 load 'libs/bats-file/load'
 load 'libs/bats-mock/load'
 
+# Get the path of the zdisk script: expected in the current directory
+ZDISK_PATH="$PWD"
 
 function setup() {
     TEST_TEMP_DIR="$(temp_make)"
@@ -81,7 +80,7 @@ function create_quickSaved_archive() {
 #------
 
 @test "Help page" {
-    run zdisk help
+    run ${ZDISK_PATH}/zdisk help
 
     assert_success
     assert_line --index 0 --partial "Persistent compressed ramdisk manager v" 
@@ -90,7 +89,7 @@ function create_quickSaved_archive() {
 @test "Start, already mounted" {
     stub grep "-q ${ZDISK_MOUNTPOINT} /etc/mtab : true"
     
-    run zdisk start 
+    run ${ZDISK_PATH}/zdisk start 
     
     assert_failure 1
     assert_output "Disk already mounted"
@@ -109,7 +108,7 @@ function create_quickSaved_archive() {
     stub mkfs     "-t xfs ${zramDevice} : true"
     stub mount    "${zramDevice} ${ZDISK_MOUNTPOINT}"
     
-    run zdisk start
+    run ${ZDISK_PATH}/zdisk start
     
     assert_success
     assert_dir_exist "${ZDISK_MOUNTPOINT}"
@@ -132,7 +131,7 @@ function create_quickSaved_archive() {
     stub mkfs     "-t xfs ${zramDevice} : true"
     stub mount    "${zramDevice} ${ZDISK_MOUNTPOINT}"
     
-    run zdisk start
+    run ${ZDISK_PATH}/zdisk start
     
     assert_success
     assert_dir_exist "${ZDISK_MOUNTPOINT}"
@@ -159,7 +158,7 @@ function create_quickSaved_archive() {
                   "-t squashfs ${SAVED_DISK}.sqfs ${OVR_LOWER}"  \
                   "-t overlay -o lowerdir=${OVR_LOWER},upperdir=${OVR_ZRAM}/upper,workdir=${OVR_ZRAM}/work overlayfs ${ZDISK_MOUNTPOINT}"
     
-    run zdisk start
+    run ${ZDISK_PATH}/zdisk start
 
     assert_success
     assert_dir_exist "${ZDISK_MOUNTPOINT}"
@@ -188,7 +187,7 @@ function create_quickSaved_archive() {
     stub mkfs     "-t xfs ${zramDevice} : true"
     stub mount    "${zramDevice} ${ZDISK_MOUNTPOINT}"
     
-    run zdisk start
+    run ${ZDISK_PATH}/zdisk start
     
     assert_success
     assert_dir_exist       "${ZDISK_MOUNTPOINT}"
@@ -221,7 +220,7 @@ function create_quickSaved_archive() {
                   "-t squashfs ${SAVED_DISK}.sqfs ${OVR_LOWER}"  \
                   "-t overlay -o lowerdir=${OVR_LOWER},upperdir=${OVR_ZRAM}/upper,workdir=${OVR_ZRAM}/work overlayfs ${ZDISK_MOUNTPOINT}"
     
-    run zdisk start
+    run ${ZDISK_PATH}/zdisk start
     
     assert_success
     assert_dir_exist  "${OVR_LOWER}" 
@@ -248,7 +247,7 @@ function create_quickSaved_archive() {
     export RESTORE_ON_START="true"
 
     mkdir -p "${ROOT}/usr/local/bin"
-    cp ../zdisk "${ROOT}/usr/local/bin/test-zdisk"
+    cp ${ZDISK_PATH}/zdisk "${ROOT}/usr/local/bin/test-zdisk"
     
     touchFile "${SAVED_DISK}.sqfs"
     
@@ -281,7 +280,7 @@ function create_quickSaved_archive() {
 @test "Stop, not monted" {
     stub grep     "-q ${ZDISK_MOUNTPOINT} /etc/mtab : false"
     
-    run zdisk stop
+    run ${ZDISK_PATH}/zdisk stop
     
     assert_output  "Disk not mounted"
     assert_failure 1
@@ -295,7 +294,7 @@ function create_quickSaved_archive() {
     stub umount   "${ZDISK_MOUNTPOINT}"
     stub zramctl  "-r ${zramDevice}"
     
-    run zdisk stop --nosave
+    run ${ZDISK_PATH}/zdisk stop --nosave
     
     assert_success
     
@@ -313,7 +312,7 @@ function create_quickSaved_archive() {
                   "${OVR_LOWER}"
     stub zramctl  "-r ${zramDevice}"
     
-    run zdisk stop --nosave
+    run ${ZDISK_PATH}/zdisk stop --nosave
     
     assert_success
     
@@ -337,7 +336,7 @@ function create_quickSaved_archive() {
                   "${OVR_LOWER}"
     stub zramctl  "-r ${zramDevice}"
     
-    run zdisk stop
+    run ${ZDISK_PATH}/zdisk stop
     
     assert_success
     assert_output --partial "Restoring ${SAVED_DISK}.sqfs from ${SAVED_DISK}.tmp.sqfs"
@@ -358,7 +357,7 @@ function create_quickSaved_archive() {
     QUICKSAVE_FILE="${SAVED_DISK}.ovr.tbz2"
 
     mkdir -p "${ROOT}/usr/local/bin"
-    cp ../zdisk "${ROOT}/usr/local/bin/test-zdisk"
+    cp ${ZDISK_PATH}/zdisk "${ROOT}/usr/local/bin/test-zdisk"
 
     fillRamdisk
     touchFile "${SAVED_DISK}.tmp.sqfs"
@@ -390,7 +389,7 @@ function create_quickSaved_archive() {
 @test "Save, not mounted" {
     stub grep     "-q ${ZDISK_MOUNTPOINT} /etc/mtab : false"
     
-    run zdisk save
+    run ${ZDISK_PATH}/zdisk save
     
     assert_output  "Disk not mounted"
     assert_failure 1
@@ -404,7 +403,7 @@ function create_quickSaved_archive() {
 
     stub grep     "-q ${ZDISK_MOUNTPOINT} /etc/mtab : true"
     
-    run zdisk save --quick
+    run ${ZDISK_PATH}/zdisk save --quick
     
     assert_success
     assert_output "Doing quick backup"
@@ -425,7 +424,7 @@ function create_quickSaved_archive() {
     
     stub grep     "-q ${ZDISK_MOUNTPOINT} /etc/mtab : true"
     
-    run zdisk save --quick
+    run ${ZDISK_PATH}/zdisk save --quick
     
     assert_success
     assert_output "Doing quick backup"
@@ -448,7 +447,7 @@ function create_quickSaved_archive() {
     stub grep     "-q ${ZDISK_MOUNTPOINT} /etc/mtab : true"
     stub losetup  "-j ${SAVED_DISK}.sqfs : echo ''"
     
-    run zdisk save
+    run ${ZDISK_PATH}/zdisk save
     
     assert_success
     assert_line --index 0 "Doing full backup"
@@ -465,7 +464,7 @@ function create_quickSaved_archive() {
     stub grep     "-q ${ZDISK_MOUNTPOINT} /etc/mtab : true"
     stub losetup  "-j ${SAVED_DISK}.sqfs : echo '${zramDevice}: [64262]:136990 (${SAVED_DISK}.sqfs)'"
     
-    run zdisk save -overwrite
+    run ${ZDISK_PATH}/zdisk save -overwrite
     
     assert_success || fail "$output"
     assert_line --index 0 "Destination file is mounted, saving to ${SAVED_DISK}.tmp.sqfs"
@@ -484,7 +483,7 @@ function create_quickSaved_archive() {
     stub grep     "-q ${ZDISK_MOUNTPOINT} /etc/mtab : true"
     stub losetup  "-j ${SAVED_DISK}.sqfs : echo '${zramDevice}: [64262]:136990 (${SAVED_DISK}.sqfs)'"
     
-    run zdisk save
+    run ${ZDISK_PATH}/zdisk save
     
     assert_success
     assert_line --index 0 "Destination file is mounted, saving to ${SAVED_DISK}.tmp.sqfs"
@@ -497,7 +496,7 @@ function create_quickSaved_archive() {
 }
 
 @test "Install, script only" {
-    run zdisk install
+    run ${ZDISK_PATH}/zdisk install
     
     assert_success
     assert_file_exist "${ROOT}/usr/local/bin/zdisk"
@@ -507,7 +506,7 @@ function create_quickSaved_archive() {
     stub systemctl "daemon-reload" \
                    "enable test-disk.service"
 
-    run zdisk install --systemd test-disk --autostart on
+    run ${ZDISK_PATH}/zdisk install --systemd test-disk --autostart on
     
     assert_success
     assert_file_exist "${ROOT}/usr/local/bin/zdisk"
@@ -525,7 +524,7 @@ function create_quickSaved_archive() {
 @test "Uninstall" {
     touchFile "${ROOT}/usr/local/bin/zdisk"
     
-    run zdisk uninstall
+    run ${ZDISK_PATH}/zdisk uninstall
     
     assert_success
     assert_file_not_exist "${ROOT}/usr/local/bin/zdisk"
@@ -540,7 +539,7 @@ function create_quickSaved_archive() {
     stub systemctl "stop test-zdisk" \
                    "disable test-zdisk"
     
-    run zdisk uninstall --systemd test-zdisk
+    run ${ZDISK_PATH}/zdisk uninstall --systemd test-zdisk
     
     assert_success
     assert_file_not_exist "${ROOT}/etc/conf.d/test-zdisk"

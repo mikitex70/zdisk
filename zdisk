@@ -23,6 +23,7 @@
 # Dependencies:
 #   tools  : zramctl, mksquashfs
 #   modules: zram, overlay
+#   filesystems: xfs
 #
 # Michele Tessaro
 
@@ -34,20 +35,20 @@ CONF_DIR="${ROOT}/etc/conf.d"                     # Configuration files director
 BIN_PATH=${BIN_PATH:-"${ROOT}/usr/local/bin"}     # Binary installation path
 ZDISK_BIN="${BIN_PATH}/zdisk"                     # Name of the script binary
 
-# These options are configurable throught the /etc/conf.d/zdisk configuration file
+# These options are configurable throught the /etc/conf.d/zdisk configuration file or with environment variables
 RESTORE_ON_START=${RESTORE_ON_START:-"true"}
 SAVE_ON_STOP=${SAVE_ON_STOP:-"true"}
-ZDISK_PCTSIZE=${ZDISK_PCTSIZE:-25}
+ZDISK_PCTSIZE=${ZDISK_PCTSIZE:-25}                                   # Size of ramdisk (default 25% of ram)
 memTotal=$(head -n1 /proc/meminfo | tr -s ' ' | cut -d ' ' -f2)
-ZDISK_SIZE=${ZDISK_SIZE:-"$(( memTotal*ZDISK_PCTSIZE/100 ))K"}
+ZDISK_SIZE=${ZDISK_SIZE:-"$(( memTotal*ZDISK_PCTSIZE/100 ))K"}       # Size of ramdisk, in kilobytes
 ZDISK_ALGORITHM=${ZDISK_ALGORITHM:-"lzo"}
-ZDISK_FS=${ZDISK_FS:-"xfs"}
+ZDISK_FS=${ZDISK_FS:-"xfs"}                                          # Filesystem used for the ramdisk
 SERVICE_NAME=$(basename "$0")
-ZDISK_MOUNTPOINT=${ZDISK_MOUNTPOINT:-"${ROOT}/mnt/${SERVICE_NAME}"}
-SAVED_DISK="${ROOT}/var/lib/${SERVICE_NAME}"
-SAVED_QUICK="${SAVED_DISK}.ovr.tbz2"
-SAVE_MODE=${SAVE_MODE:-"full"}
-SAVE_NICE=${SAVE_NICE:-10}
+ZDISK_MOUNTPOINT=${ZDISK_MOUNTPOINT:-"${ROOT}/mnt/${SERVICE_NAME}"}  # Where the disk is made available
+SAVED_DISK="${ROOT}/var/lib/${SERVICE_NAME}"                         # The squashedfs filename used for storing ramdisk contents
+SAVED_QUICK="${SAVED_DISK}.ovr.tbz2"                                 # The file used for quick saves
+SAVE_MODE=${SAVE_MODE:-"full"}                                       # full or incremental; incremental is deprecated
+SAVE_NICE=${SAVE_NICE:-10}                                           # Priority when saving disk contents
 
 # These variables does not need to be changed
 OVR_WORKDIR=${OVR_WORKDIR:-"${ROOT}/tmp"}
@@ -282,7 +283,7 @@ ZDISK_MOUNTPOINT="/mnt/${serviceName}"
 SAVED_DISK="/var/lib/${serviceName}.sqfs"
 
 # Backup mode. Possible values:
-#   incremental: fast but the backup may grow as deleted files still be the file
+#   incremental: fast but the backup may grow as deleted files still be the file (DEPRECATED)
 #   full       : slow, but more compact (deleted files will be remove from the backup)
 SAVEMODE="full"
 
