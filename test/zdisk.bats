@@ -17,6 +17,7 @@ function setup() {
 
     export ZDISK_SIZE="1024K"
     export ROOT="${TEST_TEMP_DIR}"
+    export USE_PBZIP2="false" # don't use pbzip2 during tests
 
     SAVED_DISK="${ROOT}/var/lib/zdisk"
     ZDISK_MOUNTPOINT="${ROOT}/mnt/zdisk"
@@ -440,6 +441,32 @@ function create_quickSaved_archive() {
     assert_file_exist "${ovr_contents}/test_file.txt"
 }
 
+@test "Save, quick, use pbzip2" {
+    fillRamdisk
+    mkdir -p "${ZDISK_MOUNTPOINT}"
+
+    stub grep     "-q ${ZDISK_MOUNTPOINT} /etc/mtab : true"
+    stub which    "pbzip2 : echo $(which bzip2)"
+    
+    export USE_PBZIP2="true" # For this test use pbzip2
+    
+    run ${ZDISK_PATH}/zdisk save --quick
+    
+    assert_success
+    assert_output "Doing quick backup with pbzip2"
+    assert_file_exist "${QUICKSAVE_FILE}"
+    
+    unstub which   || fail "$output"
+    unstub grep    || fail "$output"
+    
+    local ovr_contents="${TEST_TEMP_DIR}/ovr_contents"
+    
+    mkdir -p "${ovr_contents}"
+    tar -C ${ovr_contents} -jxf "${QUICKSAVE_FILE}"
+    
+    assert_file_exist "${ovr_contents}/test_file.txt"
+}
+
 @test "Save, full, no previously saved" {
     fillRamdisk
     mkdir -p "${ZDISK_MOUNTPOINT}"
@@ -500,6 +527,27 @@ function create_quickSaved_archive() {
     
     assert_success
     assert_file_exist "${ROOT}/usr/local/bin/zdisk"
+}
+
+@test "Install, script only, no overwrite" {
+    touchFile "${ROOT}/usr/local/bin/zdisk"
+    
+    run ${ZDISK_PATH}/zdisk install
+    
+    assert_success
+    assert_output "Command already installed, use --force to force reinstall"
+    assert_file_exist "${ROOT}/usr/local/bin/zdisk"
+    assert [ $(wc -c < "${ROOT}/usr/local/bin/zdisk") -eq 0 ] # it must not be changed
+}
+
+@test "Install, script only, forced overwrite" {
+    touchFile "${ROOT}/usr/local/bin/zdisk"
+    
+    run ${ZDISK_PATH}/zdisk install --force
+    
+    assert_success
+    assert_file_exist "${ROOT}/usr/local/bin/zdisk"
+    assert [ $(wc -c < "${ROOT}/usr/local/bin/zdisk") -gt 0 ] # it must be changed
 }
 
 @test "Install, systemd service" {

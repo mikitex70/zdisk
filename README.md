@@ -1,4 +1,4 @@
-[![Build Status](https://travis-ci.org/mikitex70/zdisk.svg?branch=master)](https://travis-ci.org/Simo/sboot)
+[![Build Status](https://travis-ci.org/mikitex70/zdisk.svg?branch=master)](https://travis-ci.org/mikitex70/zdisk)
 
 # Persistent compressed ramdisk manager
 
@@ -18,8 +18,13 @@ This utility requires the following tools:
 * `xfs` filesystem (can be changed with environment variables)
 * `mksquashfs`: usually provided by the `squashfs-tools` package
 * `zramctl`: sometimes provided by te `util.linux` package
+* `bzip2`, for compressing backups during *quick saves*.
 
 If some tool is missing, use the package manager of your Linux distribution to install it.
+
+Optionally, these utilities are used if foundin the system:
+
+* `pbzip2`: used as substitution for `bzip2` for parallel compression during *quick saves*
 
 
 ## Install
@@ -104,7 +109,7 @@ All commands can be run with an optional argument specifing the _disk name_; thi
 
 The behaviour of the `zdisk` script can be changed with environment variables or changing the relative `/etc/conf.d/zdisk` configuration file.
 
-The available variable are (default values are shown):
+The available variables are (default values are shown):
 
 ```bash
     # Where to mount the persistent compressed ramdisk
@@ -112,6 +117,9 @@ The available variable are (default values are shown):
 
     # File where to backup ramdisk contents
     # SAVED_DISK="/var/lib/zdisk.sqfs"
+
+    # Use pbzip2, if installed, instead of bzip2 for parallel compression during quick saves.
+    # USE_PBZIP2="true"
 
     # on stop, save disk contents
     # SAVE_ON_STOP="true"
