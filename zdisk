@@ -27,7 +27,7 @@
 #
 # Michele Tessaro
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 ZDISK_PATH="${ZDISK_PATH:-$(readlink -f "$0")}"   # The path of this script
 ROOT=${ROOT:-""}                                  # Set externally to change the installation root
 SYSTEMD_SERVICE_DIR="${ROOT}/etc/systemd/system"  # Systemd configuration directory
@@ -49,6 +49,7 @@ SAVED_DISK="${ROOT}/var/lib/${SERVICE_NAME}"                         # The squas
 SAVED_QUICK="${SAVED_DISK}.ovr.tbz2"                                 # The file used for quick saves
 SAVE_MODE=${SAVE_MODE:-"full"}                                       # full or incremental; incremental is deprecated
 SAVE_NICE=${SAVE_NICE:-10}                                           # Priority when saving disk contents
+USE_PBZIP2=${USE_PBZIP2:-true}                                       # Use pbzip2, if installed
 
 # These variables does not need to be changed
 OVR_WORKDIR=${OVR_WORKDIR:-"${ROOT}/tmp"}
@@ -192,17 +193,26 @@ function save() {
 
         if [[ "${saveMode}" == "quick" ]]; then
             # Backup only the changed files (from the ramdisk)
-            echo "Doing ${saveMode} backup"
             mkdir -p $(dirname "${SAVED_QUICK}")
+
+            local PBZIP2_PATH="$(which pbzip2)"
+            local TAR_OPTS="-j"
+
+            if [[ "${USE_PBZIP2}" == "true" && -n "${PBZIP2_PATH}" ]]; then
+                TAR_OPTS="--use-compress-prog=${PBZIP2_PATH}"
+                echo "Doing ${saveMode} backup with pbzip2"
+            else
+                echo "Doing ${saveMode} backup"
+            fi
             
             if [ -d "${OVR_ZRAM}/upper" ]; then
                 # Ramdisk + squashed filesystem, save only ramdisk contents
                 #nice -n ${SAVE_NICE} 
-                tar -C "${OVR_ZRAM}/upper" -jcf "${SAVED_QUICK}" . || die "Unable to save ramdisk contents"
+                tar -C "${OVR_ZRAM}/upper" ${TAR_OPTS} -cf "${SAVED_QUICK}" . || die "Unable to save ramdisk contents"
             else
                 # Ramdisk only, save the contents
                 #nice -n ${SAVE_NICE} 
-                tar -C "${ZDISK_MOUNTPOINT}" -jcf "${SAVED_QUICK}" . || die "Unable to save ramdisk contents"
+                tar -C "${ZDISK_MOUNTPOINT}" ${TAR_OPTS} -cf "${SAVED_QUICK}" . || die "Unable to save ramdisk contents"
             fi
         else
             if [[ "${saveMode}" == "incremental" ]]; then
@@ -244,6 +254,7 @@ function install() {
     local serviceType=""
     local serviceName="zdisk"
     local autostart="true"
+    local forceInstall=""
 
     # Argument parsing
     while [[ -n "$1" ]]; do
@@ -255,6 +266,10 @@ function install() {
                 shift
                 autostart=$(boolValue "$1")
                 ;;
+            "--force")
+                shift
+                forceInstall="true"
+                ;;
             *)
                 serviceName="$1"
                 ;;
@@ -262,10 +277,12 @@ function install() {
         shift
     done
     
-    if [ ! -f "${ZDISK_BIN}" ]; then
+    if [[ ! -f "${ZDISK_BIN}" || -n "${forceInstall}" ]]; then
         # Copy the script in the bin directory
         mkdir -p "${BIN_PATH}"
         cp "${ZDISK_PATH}" "${ZDISK_BIN}"
+    else
+        echo "Command already installed, use --force to force reinstall"
     fi
     
     # Make an alias for the service
@@ -286,6 +303,9 @@ SAVED_DISK="/var/lib/${serviceName}.sqfs"
 #   incremental: fast but the backup may grow as deleted files still be the file (DEPRECATED)
 #   full       : slow, but more compact (deleted files will be remove from the backup)
 SAVEMODE="full"
+
+# Use pbzip2, if installed, instead of bzip2 for parallel compression during quick saves.
+# USE_PBZIP2="true"
 
 # on stop, save disk contents
 # SAVE_ON_STOP="true"
@@ -413,7 +433,8 @@ save                      save contents of a mounted ramdisk
     --overwrite             overwrite if exists (do not create .bak file)
 install [name]            install script command (default name=${SERVICE_NAME})
     --systemd               install also systemd service
-    --autostart [on|off]    make service start at boot (default: on)      
+    --autostart [on|off]    make service start at boot (default: on)
+    --force                 force installation even if already installed
 uninstall [name]          uninstall script command (default name=${SERVICE_NAME})
     --systemd               remove also systemd service
 EOF
